@@ -292,8 +292,8 @@ class GraphExplorer {
   renderTreeLayout() {
     const { nodes, links } = this.getVisibleData();
 
-    // Build hierarchy
-    const hierarchy = this.buildHierarchy(nodes);
+    // Build hierarchy using aggregated links
+    const hierarchy = this.buildHierarchy(nodes, links);
     if (!hierarchy) return;
 
     const treeLayout = d3.tree()
@@ -350,7 +350,7 @@ class GraphExplorer {
   renderRadialLayout() {
     const { nodes, links } = this.getVisibleData();
 
-    const hierarchy = this.buildHierarchy(nodes);
+    const hierarchy = this.buildHierarchy(nodes, links);
     if (!hierarchy) return;
 
     const radius = Math.min(this.width, this.height) / 2 - 100;
@@ -413,21 +413,26 @@ class GraphExplorer {
       .on('mouseout', () => this.hideTooltip());
   }
 
-  buildHierarchy(nodes) {
+  buildHierarchy(nodes, links) {
     // For tree layout, build hierarchy based on actual dependency relationships
     // not containment. Find nodes with most dependents as potential roots.
     const nodeMap = new Map(nodes.map(n => [n.id, { ...n, children: [] }]));
     const nodeIds = new Set(nodes.map(n => n.id));
 
+    // Build adjacency map for fast lookup
+    const outgoingLinks = new Map(); // source -> [targets]
+    nodes.forEach(n => outgoingLinks.set(n.id, []));
+
     // Count incoming dependencies for each node
     const incomingCount = new Map();
     nodes.forEach(n => incomingCount.set(n.id, 0));
 
-    for (const link of this.data.links) {
+    for (const link of links) {
       const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
       const targetId = typeof link.target === 'string' ? link.target : link.target.id;
       if (nodeIds.has(sourceId) && nodeIds.has(targetId)) {
         incomingCount.set(targetId, (incomingCount.get(targetId) || 0) + 1);
+        outgoingLinks.get(sourceId)?.push(targetId);
       }
     }
 
@@ -437,11 +442,9 @@ class GraphExplorer {
       if (visited.has(node.id) || depth > 10) return; // Prevent cycles and limit depth
       visited.add(node.id);
 
-      for (const link of this.data.links) {
-        const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
-        const targetId = typeof link.target === 'string' ? link.target : link.target.id;
-
-        if (sourceId === node.id && nodeIds.has(targetId) && !visited.has(targetId)) {
+      const targets = outgoingLinks.get(node.id) || [];
+      for (const targetId of targets) {
+        if (!visited.has(targetId)) {
           const targetNode = nodeMap.get(targetId);
           if (targetNode) {
             node.children.push({ ...targetNode, children: [] });
@@ -455,15 +458,9 @@ class GraphExplorer {
     let roots = nodes.filter(n => incomingCount.get(n.id) === 0);
     if (roots.length === 0) {
       // All nodes have incoming deps (cycles), pick the one with most outgoing
-      const outgoingCount = new Map();
-      nodes.forEach(n => outgoingCount.set(n.id, 0));
-      for (const link of this.data.links) {
-        const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
-        if (nodeIds.has(sourceId)) {
-          outgoingCount.set(sourceId, (outgoingCount.get(sourceId) || 0) + 1);
-        }
-      }
-      roots = [...nodes].sort((a, b) => outgoingCount.get(b.id) - outgoingCount.get(a.id)).slice(0, 1);
+      roots = [...nodes].sort((a, b) =>
+        (outgoingLinks.get(b.id)?.length || 0) - (outgoingLinks.get(a.id)?.length || 0)
+      ).slice(0, 1);
     }
 
     // Build tree from the first root (or create multi-root structure)

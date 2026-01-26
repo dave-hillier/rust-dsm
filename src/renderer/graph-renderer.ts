@@ -45,6 +45,13 @@ class GraphExplorer {
     this.eventBus = window.eventBus;
     this.hiddenKinds = new Set();
 
+    // Build lookup maps for performance
+    this.nodeMap = new Map(this.data.nodes.map(n => [n.id, n]));
+    this.crateIdCache = new Map();
+    this.data.nodes.forEach(n => {
+      this.crateIdCache.set(n.id, this.computeCrateId(n));
+    });
+
     // Start with only top-level nodes visible
     this.initCollapsedState();
 
@@ -157,7 +164,7 @@ class GraphExplorer {
     if (visibleIds.has(nodeId)) return nodeId;
 
     // Find the node and check its parent
-    const node = this.data.nodes.find(n => n.id === nodeId);
+    const node = this.nodeMap.get(nodeId);
     if (!node) return null;
 
     if (node.parent) {
@@ -167,16 +174,19 @@ class GraphExplorer {
     return null;
   }
 
-  getCrateId(node) {
-    // Find the root crate this node belongs to
+  computeCrateId(node) {
     if (!node.parent) return node.id;
     let current = node;
     while (current.parent) {
-      const parent = this.data.nodes.find(n => n.id === current.parent);
+      const parent = this.nodeMap.get(current.parent);
       if (!parent) break;
       current = parent;
     }
     return current.id;
+  }
+
+  getCrateId(node) {
+    return this.crateIdCache.get(node.id) || node.id;
   }
 
   renderForceLayout() {
@@ -589,7 +599,7 @@ class GraphExplorer {
   }
 
   centerOnNode(nodeId) {
-    const node = this.data.nodes.find(n => n.id === nodeId);
+    const node = this.nodeMap.get(nodeId);
     if (!node || node.x === undefined) return;
 
     const transform = d3.zoomIdentity

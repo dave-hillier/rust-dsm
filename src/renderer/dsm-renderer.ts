@@ -168,10 +168,28 @@ class DsmMatrix {
     this.sortBy = 'path';
     this.eventBus = window.eventBus;
 
+    // Build lookup maps for performance
+    this.nodeMap = new Map(this.data.nodes.map(n => [n.id, n]));
+    this.crateIdCache = new Map();
+    this.data.nodes.forEach(n => {
+      this.crateIdCache.set(n.id, this.computeCrateId(n));
+    });
+
     // Start collapsed to top level (crate level) by default
     this.initCollapsedState();
 
     this.init();
+  }
+
+  computeCrateId(node) {
+    if (!node.parentId) return node.id;
+    let current = node;
+    while (current.parentId) {
+      const parent = this.nodeMap.get(current.parentId);
+      if (!parent) break;
+      current = parent;
+    }
+    return current.id;
   }
 
   initCollapsedState() {
@@ -299,7 +317,7 @@ class DsmMatrix {
     if (node.depth === 0) return node.id;
     let current = node;
     while (current.parentId) {
-      const parent = this.data.nodes.find(n => n.id === current.parentId);
+      const parent = this.nodeMap.get(current.parentId);
       if (!parent || parent.depth === 0) return current.parentId || current.id;
       current = parent;
     }
@@ -328,22 +346,14 @@ class DsmMatrix {
   }
 
   getCrateId(node) {
-    // Find the root crate this node belongs to
-    if (!node.parentId) return node.id;
-    let current = node;
-    while (current.parentId) {
-      const parent = this.data.nodes.find(n => n.id === current.parentId);
-      if (!parent) break;
-      current = parent;
-    }
-    return current.id;
+    return this.crateIdCache.get(node.id) || node.id;
   }
 
   isDescendantOf(nodeId, ancestorId) {
-    let current = this.data.nodes.find(n => n.id === nodeId);
+    let current = this.nodeMap.get(nodeId);
     while (current && current.parentId) {
       if (current.parentId === ancestorId) return true;
-      current = this.data.nodes.find(n => n.id === current.parentId);
+      current = this.nodeMap.get(current.parentId);
     }
     return false;
   }
@@ -656,14 +666,14 @@ class DsmMatrix {
 
   findVisibleAncestor(nodeId, visibleIds) {
     if (visibleIds.has(nodeId)) return nodeId;
-    const node = this.data.nodes.find(n => n.id === nodeId);
+    const node = this.nodeMap.get(nodeId);
     if (!node || !node.parentId) return null;
     return this.findVisibleAncestor(node.parentId, visibleIds);
   }
 
   showAggregatedCellTooltip(event, cell, isUpperTriangle = true) {
-    const fromNode = this.data.nodes.find(n => n.id === cell.fromId);
-    const toNode = this.data.nodes.find(n => n.id === cell.toId);
+    const fromNode = this.nodeMap.get(cell.fromId);
+    const toNode = this.nodeMap.get(cell.toId);
 
     // Upper triangle (green): fromNode uses toNode
     // Lower triangle (blue): fromNode is used by toNode

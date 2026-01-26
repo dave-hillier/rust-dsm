@@ -3,10 +3,39 @@ import type { CrateDefinition, ModuleDefinition } from '../types/ast.js';
 import { readFileSync } from 'fs';
 
 export function buildFileTree(crate: CrateDefinition): FileNode {
-  return buildModuleTree(crate.rootModule);
+  // Check if this is a workspace (virtual crate with multiple submodules named 'crate')
+  const isWorkspace = crate.rootModule.submodules.length > 0 &&
+    crate.rootModule.submodules.every(m => m.name === 'crate');
+
+  if (isWorkspace) {
+    return buildWorkspaceTree(crate);
+  }
+
+  return buildModuleTree(crate.rootModule, crate.name);
 }
 
-function buildModuleTree(module: ModuleDefinition): FileNode {
+function buildWorkspaceTree(workspace: CrateDefinition): FileNode {
+  // Each submodule is a crate root, give it the crate's name
+  const children: FileNode[] = workspace.rootModule.submodules.map((crateRoot, index) => {
+    // Find the crate name from the path - look for parent of 'src' directory
+    // Path is like /path/to/kernel/hx-alias/src/lib.rs
+    const pathParts = crateRoot.filePath.split('/');
+    const srcIndex = pathParts.lastIndexOf('src');
+    const crateName = srcIndex > 0 ? pathParts[srcIndex - 1] : `crate_${index}`;
+    return buildModuleTree(crateRoot, crateName);
+  });
+
+  return {
+    name: workspace.name,
+    path: 'workspace',
+    children,
+    linesOfCode: 0,
+    fileSize: 0,
+    complexity: 0,
+  };
+}
+
+function buildModuleTree(module: ModuleDefinition, crateName?: string): FileNode {
   let linesOfCode = 0;
   let fileSize = 0;
 
@@ -22,11 +51,15 @@ function buildModuleTree(module: ModuleDefinition): FileNode {
     module.functions.reduce((sum, fn) => sum + fn.bodyCallsites.length + 1, 0) +
     module.impls.reduce((sum, impl) => sum + impl.methods.length, 0);
 
-  const children: FileNode[] = module.submodules.map(buildModuleTree);
+  const children: FileNode[] = module.submodules.map(m => buildModuleTree(m));
+
+  // Use crate name for root modules (named 'crate')
+  const displayName = (module.name === 'crate' && crateName) ? crateName : module.name;
+  const displayPath = (module.name === 'crate' && crateName) ? crateName : module.path;
 
   return {
-    name: module.name,
-    path: module.path,
+    name: displayName,
+    path: displayPath,
     children: children.length > 0 ? children : undefined,
     linesOfCode,
     fileSize,
@@ -78,23 +111,66 @@ class TreemapView {
 
     const treemap = d3.treemap()
       .size([this.width, this.height])
+      .paddingTop(20)
       .paddingInner(2)
       .paddingOuter(4)
       .round(true);
 
     const root = d3.hierarchy(this.currentRoot)
-      .sum(d => this.getValue(d))
+      .sum(d => this.getLeafValue(d))
       .sort((a, b) => b.value - a.value);
+
+    if (root.value === 0) {
+      this.svg.append('text')
+        .attr('x', this.width / 2)
+        .attr('y', this.height / 2)
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#999')
+        .text('No data to display');
+      return;
+    }
 
     treemap(root);
 
-    const cell = this.svg.selectAll('g')
+    // Render all nodes (not just leaves) for nested treemap
+    const allNodes = root.descendants();
+
+    // First render parent group backgrounds
+    const parents = this.svg.selectAll('g.parent')
+      .data(allNodes.filter(d => d.children))
+      .enter()
+      .append('g')
+      .attr('class', 'parent')
+      .attr('transform', d => \`translate(\${d.x0}, \${d.y0})\`);
+
+    parents.append('rect')
+      .attr('width', d => Math.max(0, d.x1 - d.x0))
+      .attr('height', d => Math.max(0, d.y1 - d.y0))
+      .attr('fill', d => d.depth === 0 ? '#f8f9fa' : this.getParentColor(d.depth))
+      .attr('stroke', '#ccc')
+      .attr('stroke-width', 1);
+
+    parents.append('text')
+      .attr('x', 4)
+      .attr('y', 14)
+      .attr('font-size', '11px')
+      .attr('font-weight', 'bold')
+      .attr('fill', '#333')
+      .text(d => {
+        const width = d.x1 - d.x0;
+        if (width < 50) return '';
+        return this.truncate(d.data.name, Math.floor(width / 7));
+      });
+
+    // Then render leaf cells
+    const leaves = this.svg.selectAll('g.leaf')
       .data(root.leaves())
       .enter()
       .append('g')
+      .attr('class', 'leaf')
       .attr('transform', d => \`translate(\${d.x0}, \${d.y0})\`);
 
-    cell.append('rect')
+    leaves.append('rect')
       .attr('width', d => Math.max(0, d.x1 - d.x0))
       .attr('height', d => Math.max(0, d.y1 - d.y0))
       .attr('fill', d => this.getColor(d.data))
@@ -104,32 +180,47 @@ class TreemapView {
       .on('mouseover', (event, d) => this.showTooltip(event, d))
       .on('mouseout', () => this.hideTooltip());
 
-    cell.append('clipPath')
+    leaves.append('clipPath')
       .attr('id', (d, i) => \`clip-\${i}\`)
       .append('rect')
       .attr('width', d => Math.max(0, d.x1 - d.x0))
       .attr('height', d => Math.max(0, d.y1 - d.y0));
 
-    cell.append('text')
+    leaves.append('text')
       .attr('clip-path', (d, i) => \`url(#clip-\${i})\`)
       .attr('x', 4)
       .attr('y', 14)
-      .attr('font-size', '11px')
+      .attr('font-size', '10px')
       .attr('fill', '#fff')
       .text(d => {
         const width = d.x1 - d.x0;
-        if (width < 40) return '';
+        if (width < 30) return '';
         return this.truncate(d.data.name, Math.floor(width / 7));
       });
+  }
 
-    // Add size labels for larger cells
-    cell.filter(d => (d.x1 - d.x0) > 60 && (d.y1 - d.y0) > 30)
-      .append('text')
-      .attr('x', 4)
-      .attr('y', 28)
-      .attr('font-size', '9px')
-      .attr('fill', 'rgba(255,255,255,0.7)')
-      .text(d => this.formatValue(this.getValue(d.data)));
+  getLeafValue(node) {
+    // Only count leaf nodes' values
+    if (!node.children || node.children.length === 0) {
+      let value;
+      switch (this.sizeBy) {
+        case 'fileSize':
+          value = node.fileSize || 0;
+          break;
+        case 'complexity':
+          value = node.complexity || 0;
+          break;
+        default:
+          value = node.linesOfCode || 0;
+      }
+      return Math.max(value, 1);
+    }
+    return 0; // Non-leaf nodes get value from sum of children
+  }
+
+  getParentColor(depth) {
+    const colors = ['#f8f9fa', '#e9ecef', '#dee2e6', '#ced4da', '#adb5bd'];
+    return colors[Math.min(depth, colors.length - 1)];
   }
 
   renderBreadcrumb() {
@@ -158,14 +249,37 @@ class TreemapView {
       return node.children.reduce((sum, child) => sum + this.getValue(child), 0);
     }
 
+    let value;
     switch (this.sizeBy) {
       case 'fileSize':
-        return node.fileSize || 0;
+        value = node.fileSize || 0;
+        break;
       case 'complexity':
-        return node.complexity || 0;
+        value = node.complexity || 0;
+        break;
       default:
-        return node.linesOfCode || 0;
+        value = node.linesOfCode || 0;
     }
+    // Ensure minimum value to prevent zero-area rectangles
+    return Math.max(value, 1);
+  }
+
+  filterEmptyNodes(node) {
+    if (!node.children) {
+      // Leaf node - check if it has any meaningful value
+      const hasValue = (node.linesOfCode > 0) || (node.fileSize > 0) || (node.complexity > 0);
+      return hasValue ? node : null;
+    }
+
+    const filteredChildren = node.children
+      .map(child => this.filterEmptyNodes(child))
+      .filter(Boolean);
+
+    if (filteredChildren.length === 0) {
+      return null;
+    }
+
+    return { ...node, children: filteredChildren };
   }
 
   getColor(node) {

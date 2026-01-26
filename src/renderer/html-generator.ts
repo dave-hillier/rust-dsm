@@ -152,6 +152,15 @@ function generateHtml(
       background: #f0f0f0;
     }
 
+    .controls-separator {
+      display: inline-block;
+      width: 1px;
+      height: 20px;
+      background: #ddd;
+      margin: 0 0.25rem;
+      vertical-align: middle;
+    }
+
     .panel-content {
       flex: 1;
       overflow: auto;
@@ -237,6 +246,15 @@ function generateHtml(
     .dsm-svg .label.selected {
       fill: #3498db;
       font-weight: bold;
+    }
+
+    .dsm-svg .collapse-indicator {
+      font-family: monospace;
+      font-weight: bold;
+    }
+
+    .dsm-svg .collapse-indicator:hover {
+      fill: #3498db;
     }
 
     .dsm-svg .cell {
@@ -435,6 +453,24 @@ function generateHtml(
     .kind-badge.enum { background: #f3e5f5; color: #7b1fa2; }
     .kind-badge.trait { background: #fff3e0; color: #f57c00; }
     .kind-badge.function { background: #ffebee; color: #d32f2f; }
+
+    .kind-filters {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .kind-filter {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    .kind-filter input {
+      margin: 0;
+    }
   </style>
 </head>
 <body>
@@ -457,8 +493,21 @@ function generateHtml(
             <option value="instability">Sort by Instability</option>
             <option value="coupling">Sort by Coupling</option>
           </select>
-          <button id="dsm-expand-all">Expand All</button>
-          <button id="dsm-collapse-all">Collapse All</button>
+          <button id="dsm-expand-all" title="Expand All">Expand All</button>
+          <button id="dsm-collapse-all" title="Collapse All">Collapse All</button>
+          <select id="dsm-collapse-level" title="Collapse to Level">
+            <option value="">Collapse to Level...</option>
+            <option value="0">Level 0 (Root)</option>
+            <option value="1">Level 1</option>
+            <option value="2">Level 2</option>
+            <option value="3">Level 3</option>
+          </select>
+          <span class="controls-separator"></span>
+          <button id="dsm-zoom-in" title="Zoom In">+</button>
+          <button id="dsm-zoom-out" title="Zoom Out">-</button>
+          <button id="dsm-fit" title="Fit to View">Fit</button>
+          <span class="controls-separator"></span>
+          <button id="dsm-sync-to-graph" title="Sync expanded nodes to Graph">Sync to Graph</button>
         </div>
       </div>
       <div class="panel-content" id="dsm-container"></div>
@@ -473,13 +522,33 @@ function generateHtml(
             <option value="tree">Tree Layout</option>
             <option value="radial">Radial Layout</option>
           </select>
+          <button id="graph-zoom-in" title="Zoom In">+</button>
+          <button id="graph-zoom-out" title="Zoom Out">-</button>
+          <button id="graph-fit" title="Fit to View">Fit</button>
           <button id="graph-reset">Reset View</button>
+          <span class="controls-separator"></span>
+          <button id="graph-sync-to-dsm" title="Sync visible nodes to DSM">Sync to DSM</button>
         </div>
       </div>
       <div class="panel-content" id="graph-container"></div>
     </section>
 
     <aside class="sidebar">
+      <div class="sidebar-section">
+        <h3>Filter by Kind</h3>
+        <div class="kind-filters">
+          <label class="kind-filter"><input type="checkbox" id="filter-module" checked> <span class="kind-badge module">module</span></label>
+          <label class="kind-filter"><input type="checkbox" id="filter-struct" checked> <span class="kind-badge struct">struct</span></label>
+          <label class="kind-filter"><input type="checkbox" id="filter-enum" checked> <span class="kind-badge enum">enum</span></label>
+          <label class="kind-filter"><input type="checkbox" id="filter-trait" checked> <span class="kind-badge trait">trait</span></label>
+          <label class="kind-filter"><input type="checkbox" id="filter-function" checked> <span class="kind-badge function">function</span></label>
+        </div>
+        <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem;">
+          <button id="show-all-kinds" style="flex: 1; padding: 0.25rem;">All</button>
+          <button id="show-types-only" style="flex: 1; padding: 0.25rem;">Types Only</button>
+          <button id="show-functions-only" style="flex: 1; padding: 0.25rem;">Functions</button>
+        </div>
+      </div>
       <div class="sidebar-section">
         <h3>Filter Nodes</h3>
         <input type="text" id="node-search" placeholder="Search nodes..." style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 0.5rem;">
@@ -675,6 +744,94 @@ function generateHtml(
 
       document.getElementById('show-all-nodes').addEventListener('click', () => {
         window.eventBus.emit('filter:reset');
+      });
+
+      // Zoom controls for DSM
+      document.getElementById('dsm-zoom-in').addEventListener('click', () => {
+        window.eventBus.emit('dsm:zoomIn');
+      });
+
+      document.getElementById('dsm-zoom-out').addEventListener('click', () => {
+        window.eventBus.emit('dsm:zoomOut');
+      });
+
+      document.getElementById('dsm-fit').addEventListener('click', () => {
+        window.eventBus.emit('dsm:fitToView');
+      });
+
+      document.getElementById('dsm-expand-all').addEventListener('click', () => {
+        window.eventBus.emit('dsm:expandAll');
+      });
+
+      document.getElementById('dsm-collapse-all').addEventListener('click', () => {
+        window.eventBus.emit('dsm:collapseAll');
+      });
+
+      document.getElementById('dsm-collapse-level').addEventListener('change', (e) => {
+        const level = parseInt(e.target.value);
+        if (!isNaN(level)) {
+          window.eventBus.emit('dsm:collapseToLevel', { level });
+        }
+        e.target.value = ''; // Reset select
+      });
+
+      // Sync button for DSM
+      document.getElementById('dsm-sync-to-graph').addEventListener('click', () => {
+        if (window.dsmMatrix) {
+          window.dsmMatrix.syncToGraph();
+        }
+      });
+
+      // Zoom controls for Graph
+      document.getElementById('graph-zoom-in').addEventListener('click', () => {
+        window.eventBus.emit('graph:zoomIn');
+      });
+
+      document.getElementById('graph-zoom-out').addEventListener('click', () => {
+        window.eventBus.emit('graph:zoomOut');
+      });
+
+      document.getElementById('graph-fit').addEventListener('click', () => {
+        window.eventBus.emit('graph:fitToView');
+      });
+
+      // Sync button for Graph
+      document.getElementById('graph-sync-to-dsm').addEventListener('click', () => {
+        if (window.graphExplorer) {
+          const visibleNodeIds = window.graphExplorer.getVisibleNodeIds();
+          window.eventBus.emit('sync:fromGraph', { visibleNodeIds });
+        }
+      });
+
+      // Kind filter handlers
+      const kindFilters = ['module', 'struct', 'enum', 'trait', 'function'];
+      kindFilters.forEach(kind => {
+        document.getElementById(\`filter-\${kind}\`).addEventListener('change', (e) => {
+          window.eventBus.emit('kind:toggle', { kind, visible: e.target.checked });
+        });
+      });
+
+      document.getElementById('show-all-kinds').addEventListener('click', () => {
+        kindFilters.forEach(kind => {
+          document.getElementById(\`filter-\${kind}\`).checked = true;
+        });
+        window.eventBus.emit('kind:showAll');
+      });
+
+      document.getElementById('show-types-only').addEventListener('click', () => {
+        kindFilters.forEach(kind => {
+          const isType = ['struct', 'enum', 'trait'].includes(kind);
+          document.getElementById(\`filter-\${kind}\`).checked = isType;
+        });
+        window.eventBus.emit('kind:showTypesOnly');
+      });
+
+      document.getElementById('show-functions-only').addEventListener('click', () => {
+        kindFilters.forEach(kind => {
+          const isFunction = kind === 'function';
+          document.getElementById(\`filter-\${kind}\`).checked = isFunction;
+        });
+        window.eventBus.emit('kind:showFunctionsOnly');
       });
 
       // Structure tab controls

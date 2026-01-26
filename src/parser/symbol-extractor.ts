@@ -767,8 +767,8 @@ export class SymbolExtractor {
     return mods;
   }
 
-  extractInlineModules(root: SyntaxNode): { name: string; node: SyntaxNode }[] {
-    const mods: { name: string; node: SyntaxNode }[] = [];
+  extractInlineModules(root: SyntaxNode): { name: string; node: SyntaxNode; isCfgTest: boolean }[] {
+    const mods: { name: string; node: SyntaxNode; isCfgTest: boolean }[] = [];
     const modNodes = RustParser.findAllByType(root, 'mod_item');
 
     for (const node of modNodes) {
@@ -776,13 +776,48 @@ export class SymbolExtractor {
       const body = RustParser.findChildByType(node, 'declaration_list');
 
       if (nameNode && body) {
+        const isCfgTest = this.hasCfgTestAttribute(node);
         mods.push({
           name: this.getText(nameNode),
           node: body,
+          isCfgTest,
         });
       }
     }
 
     return mods;
+  }
+
+  private hasCfgTestAttribute(node: SyntaxNode): boolean {
+    // Look for attribute_item siblings before this node
+    let sibling = node.previousSibling;
+    while (sibling) {
+      if (sibling.type === 'attribute_item') {
+        const text = this.getText(sibling);
+        // Match #[cfg(test)] pattern
+        if (text.includes('cfg') && text.includes('test')) {
+          return true;
+        }
+      } else if (sibling.type !== 'line_comment' && sibling.type !== 'block_comment') {
+        // Stop if we hit something other than attributes or comments
+        break;
+      }
+      sibling = sibling.previousSibling;
+    }
+    return false;
+  }
+
+  extractAttributes(node: SyntaxNode): string[] {
+    const attributes: string[] = [];
+    let sibling = node.previousSibling;
+    while (sibling) {
+      if (sibling.type === 'attribute_item') {
+        attributes.push(this.getText(sibling));
+      } else if (sibling.type !== 'line_comment' && sibling.type !== 'block_comment') {
+        break;
+      }
+      sibling = sibling.previousSibling;
+    }
+    return attributes;
   }
 }

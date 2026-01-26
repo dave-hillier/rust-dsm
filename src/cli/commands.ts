@@ -8,10 +8,12 @@ import { resolve, basename } from 'path';
 import { existsSync } from 'fs';
 import { RustParser } from '../parser/rust-parser.js';
 import { ModuleResolver } from '../parser/module-resolver.js';
-import { buildDependencyGraph } from '../analysis/dependency-graph.js';
+import { buildDependencyGraph, buildWorkspaceGraph } from '../analysis/dependency-graph.js';
 import { calculateMetrics } from '../analysis/metrics.js';
 import { detectCycles } from '../analysis/cycle-detector.js';
 import { generateHtmlReport } from '../renderer/html-generator.js';
+import type { FilterConfig } from '../types/filter.js';
+import { createDefaultFilterConfig, createNoTestsFilterConfig } from '../types/filter.js';
 
 interface CliOptions {
   output: string;
@@ -19,9 +21,16 @@ interface CliOptions {
   open: boolean;
   workspace: boolean;
   verbose: boolean;
+  exclude: string[];
+  include: string[];
+  noTests: boolean;
 }
 
 const program = new Command();
+
+function collect(value: string, previous: string[]): string[] {
+  return previous.concat([value]);
+}
 
 program
   .name('rust-dsm')
@@ -33,6 +42,9 @@ program
   .option('--open', 'Open report in browser after generation', false)
   .option('--workspace', 'Analyze as Cargo workspace', false)
   .option('-v, --verbose', 'Show detailed progress', false)
+  .option('--exclude <pattern>', 'Exclude files matching pattern (repeatable)', collect, [])
+  .option('--include <pattern>', 'Include only files matching pattern (repeatable)', collect, [])
+  .option('--no-tests', 'Exclude test files, tests/ directory, and #[cfg(test)] modules')
   .action(async (inputPath: string, options: CliOptions) => {
     const spinner = ora();
     const verbose = options.verbose;
@@ -52,8 +64,26 @@ program
         process.exit(1);
       }
 
+      // Build filter config
+      let filterConfig: FilterConfig;
+      if (options.noTests) {
+        filterConfig = createNoTestsFilterConfig();
+        filterConfig.excludePatterns = options.exclude;
+        filterConfig.includePatterns = options.include;
+      } else {
+        filterConfig = createDefaultFilterConfig();
+        filterConfig.excludePatterns = options.exclude;
+        filterConfig.includePatterns = options.include;
+      }
+
       const crateName = basename(targetPath);
-      console.log(chalk.blue(`\nAnalyzing Rust crate: ${chalk.bold(crateName)}`));
+      const isWorkspace = options.workspace;
+
+      if (isWorkspace) {
+        console.log(chalk.blue(`\nAnalyzing Cargo workspace: ${chalk.bold(crateName)}`));
+      } else {
+        console.log(chalk.blue(`\nAnalyzing Rust crate: ${chalk.bold(crateName)}`));
+      }
       console.log(chalk.gray(`Path: ${targetPath}\n`));
 
       spinner.start('Initializing parser...');
@@ -61,18 +91,63 @@ program
       await parser.initialize();
       spinner.succeed('Parser initialized');
 
-      spinner.start('Resolving module structure...');
-      const resolver = new ModuleResolver(parser, targetPath);
-      const crateDefinition = await resolver.resolve();
-      spinner.succeed(`Found ${countModules(crateDefinition.rootModule)} modules`);
+      let crateDefinition;
+      let graph;
 
-      if (verbose) {
-        printModuleTree(crateDefinition.rootModule, 0);
+      if (isWorkspace) {
+        spinner.start('Resolving workspace structure...');
+        const resolver = new ModuleResolver(parser, targetPath, filterConfig);
+        const crates = await resolver.resolveWorkspace();
+        const totalModules = crates.reduce((sum, c) => sum + countModules(c.rootModule), 0);
+        spinner.succeed(`Found ${crates.length} crates with ${totalModules} total modules`);
+
+        if (verbose) {
+          for (const crate of crates) {
+            console.log(chalk.cyan(`\n${crate.name}:`));
+            printModuleTree(crate.rootModule, 1);
+          }
+        }
+
+        spinner.start('Building workspace dependency graph...');
+        graph = buildWorkspaceGraph(crates);
+        spinner.succeed(`Built graph with ${graph.nodes.size} nodes, ${graph.edges.length} edges`);
+
+        // Create a virtual workspace crate that contains all crates
+        crateDefinition = {
+          name: basename(targetPath),
+          rootModule: {
+            name: basename(targetPath),
+            path: 'workspace',
+            filePath: targetPath,
+            visibility: { kind: 'public' as const },
+            structs: [],
+            enums: [],
+            traits: [],
+            functions: [],
+            impls: [],
+            uses: [],
+            submodules: crates.map(c => c.rootModule),
+            constants: [],
+            statics: [],
+            typeAliases: [],
+          },
+          cratePath: targetPath,
+          isLibrary: false,
+        };
+      } else {
+        spinner.start('Resolving module structure...');
+        const resolver = new ModuleResolver(parser, targetPath, filterConfig);
+        crateDefinition = await resolver.resolve();
+        spinner.succeed(`Found ${countModules(crateDefinition.rootModule)} modules`);
+
+        if (verbose) {
+          printModuleTree(crateDefinition.rootModule, 0);
+        }
+
+        spinner.start('Building dependency graph...');
+        graph = buildDependencyGraph(crateDefinition);
+        spinner.succeed(`Built graph with ${graph.nodes.size} nodes, ${graph.edges.length} edges`);
       }
-
-      spinner.start('Building dependency graph...');
-      const graph = buildDependencyGraph(crateDefinition);
-      spinner.succeed(`Built graph with ${graph.nodes.size} nodes, ${graph.edges.length} edges`);
 
       spinner.start('Detecting cycles...');
       const cycles = detectCycles(graph);

@@ -42,8 +42,21 @@ class GraphExplorer {
     this.groups = new Map();
     this.simulation = null;
     this.eventBus = window.eventBus;
+    this.hiddenKinds = new Set();
+
+    // Start with only top-level nodes visible
+    this.initCollapsedState();
 
     this.init();
+  }
+
+  initCollapsedState() {
+    // Hide all nodes that have a parent - only show top-level crate nodes
+    this.data.nodes.forEach(node => {
+      if (node.parent) {
+        this.hiddenNodes.add(node.id);
+      }
+    });
   }
 
   init() {
@@ -95,14 +108,54 @@ class GraphExplorer {
   }
 
   getVisibleData() {
-    const nodes = this.data.nodes.filter(n => !this.hiddenNodes.has(n.id));
+    const nodes = this.data.nodes.filter(n =>
+      !this.hiddenNodes.has(n.id) && !this.hiddenKinds.has(n.kind)
+    );
     const nodeIds = new Set(nodes.map(n => n.id));
-    const links = this.data.links.filter(l => {
+
+    // Build aggregated links - when a link's source or target is hidden,
+    // bubble it up to the nearest visible ancestor
+    const aggregatedLinks = new Map();
+
+    for (const l of this.data.links) {
       const sourceId = typeof l.source === 'string' ? l.source : l.source.id;
       const targetId = typeof l.target === 'string' ? l.target : l.target.id;
-      return nodeIds.has(sourceId) && nodeIds.has(targetId);
-    });
-    return { nodes, links };
+
+      // Find visible ancestor for source and target
+      const visibleSource = this.findVisibleAncestor(sourceId, nodeIds);
+      const visibleTarget = this.findVisibleAncestor(targetId, nodeIds);
+
+      if (visibleSource && visibleTarget && visibleSource !== visibleTarget) {
+        const key = \`\${visibleSource}|\${visibleTarget}\`;
+        if (aggregatedLinks.has(key)) {
+          const existing = aggregatedLinks.get(key);
+          existing.weight += l.weight;
+        } else {
+          aggregatedLinks.set(key, {
+            source: visibleSource,
+            target: visibleTarget,
+            weight: l.weight,
+            depType: l.depType
+          });
+        }
+      }
+    }
+
+    return { nodes, links: Array.from(aggregatedLinks.values()) };
+  }
+
+  findVisibleAncestor(nodeId, visibleIds) {
+    if (visibleIds.has(nodeId)) return nodeId;
+
+    // Find the node and check its parent
+    const node = this.data.nodes.find(n => n.id === nodeId);
+    if (!node) return null;
+
+    if (node.parent) {
+      return this.findVisibleAncestor(node.parent, visibleIds);
+    }
+
+    return null;
   }
 
   renderForceLayout() {
@@ -113,7 +166,21 @@ class GraphExplorer {
       this.simulation.stop();
     }
 
-    // Create links
+    // Define arrow marker - smaller size for better visibility with many edges
+    const defs = this.g.append('defs');
+    defs.append('marker')
+      .attr('id', 'arrowhead')
+      .attr('viewBox', '0 -3 6 6')
+      .attr('refX', 6)
+      .attr('refY', 0)
+      .attr('markerWidth', 4)
+      .attr('markerHeight', 4)
+      .attr('orient', 'auto')
+      .append('path')
+      .attr('d', 'M0,-3L6,0L0,3')
+      .attr('fill', '#888');
+
+    // Create links with arrows
     const link = this.g.append('g')
       .attr('class', 'links')
       .selectAll('line')
@@ -123,7 +190,8 @@ class GraphExplorer {
       .attr('class', 'link')
       .attr('stroke', '#999')
       .attr('stroke-opacity', 0.6)
-      .attr('stroke-width', d => Math.sqrt(d.weight));
+      .attr('stroke-width', d => Math.max(1.5, Math.sqrt(d.weight)))
+      .attr('marker-end', 'url(#arrowhead)');
 
     // Create node groups
     const node = this.g.append('g')
@@ -162,16 +230,29 @@ class GraphExplorer {
 
     // Create simulation
     this.simulation = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id(d => d.id).distance(100))
-      .force('charge', d3.forceManyBody().strength(-300))
+      .force('link', d3.forceLink(links).id(d => d.id).distance(120))
+      .force('charge', d3.forceManyBody().strength(-400))
       .force('center', d3.forceCenter(this.width / 2, this.height / 2))
-      .force('collision', d3.forceCollide().radius(30))
+      .force('collision', d3.forceCollide().radius(40))
       .on('tick', () => {
+        // Calculate line endpoints to stop at node edges
         link
           .attr('x1', d => d.source.x)
           .attr('y1', d => d.source.y)
-          .attr('x2', d => d.target.x)
-          .attr('y2', d => d.target.y);
+          .attr('x2', d => {
+            const dx = d.target.x - d.source.x;
+            const dy = d.target.y - d.source.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const targetRadius = this.getNodeRadius(d.target) + 5;
+            return dist > 0 ? d.target.x - (dx / dist) * targetRadius : d.target.x;
+          })
+          .attr('y2', d => {
+            const dx = d.target.x - d.source.x;
+            const dy = d.target.y - d.source.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const targetRadius = this.getNodeRadius(d.target) + 5;
+            return dist > 0 ? d.target.y - (dy / dist) * targetRadius : d.target.y;
+          });
 
         node.attr('transform', d => \`translate(\${d.x}, \${d.y})\`);
       });
@@ -302,19 +383,80 @@ class GraphExplorer {
   }
 
   buildHierarchy(nodes) {
+    // For tree layout, build hierarchy based on actual dependency relationships
+    // not containment. Find nodes with most dependents as potential roots.
     const nodeMap = new Map(nodes.map(n => [n.id, { ...n, children: [] }]));
+    const nodeIds = new Set(nodes.map(n => n.id));
 
-    let root = null;
-    for (const node of nodeMap.values()) {
-      if (node.parent && nodeMap.has(node.parent)) {
-        nodeMap.get(node.parent).children.push(node);
-      } else if (!root || node.kind === 'module') {
-        root = node;
+    // Count incoming dependencies for each node
+    const incomingCount = new Map();
+    nodes.forEach(n => incomingCount.set(n.id, 0));
+
+    for (const link of this.data.links) {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+      if (nodeIds.has(sourceId) && nodeIds.has(targetId)) {
+        incomingCount.set(targetId, (incomingCount.get(targetId) || 0) + 1);
       }
     }
 
-    if (!root && nodeMap.size > 0) {
-      root = nodeMap.values().next().value;
+    // Build dependency tree: each node's children are nodes it depends on
+    const visited = new Set();
+    const addDependencies = (node, depth = 0) => {
+      if (visited.has(node.id) || depth > 10) return; // Prevent cycles and limit depth
+      visited.add(node.id);
+
+      for (const link of this.data.links) {
+        const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+        const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+
+        if (sourceId === node.id && nodeIds.has(targetId) && !visited.has(targetId)) {
+          const targetNode = nodeMap.get(targetId);
+          if (targetNode) {
+            node.children.push({ ...targetNode, children: [] });
+            addDependencies(node.children[node.children.length - 1], depth + 1);
+          }
+        }
+      }
+    };
+
+    // Find roots: nodes with no incoming dependencies, or if all have incoming, pick highest outgoing
+    let roots = nodes.filter(n => incomingCount.get(n.id) === 0);
+    if (roots.length === 0) {
+      // All nodes have incoming deps (cycles), pick the one with most outgoing
+      const outgoingCount = new Map();
+      nodes.forEach(n => outgoingCount.set(n.id, 0));
+      for (const link of this.data.links) {
+        const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+        if (nodeIds.has(sourceId)) {
+          outgoingCount.set(sourceId, (outgoingCount.get(sourceId) || 0) + 1);
+        }
+      }
+      roots = [...nodes].sort((a, b) => outgoingCount.get(b.id) - outgoingCount.get(a.id)).slice(0, 1);
+    }
+
+    // Build tree from the first root (or create multi-root structure)
+    let root = null;
+    if (roots.length === 1) {
+      root = { ...nodeMap.get(roots[0].id), children: [] };
+      addDependencies(root);
+    } else if (roots.length > 1) {
+      // Multiple roots - show them as siblings under a virtual root
+      root = {
+        id: '__root__',
+        label: 'Dependencies',
+        kind: 'module',
+        children: roots.map(r => {
+          const node = { ...nodeMap.get(r.id), children: [] };
+          visited.clear();
+          addDependencies(node);
+          return node;
+        })
+      };
+    }
+
+    if (!root && nodes.length > 0) {
+      root = { ...nodeMap.get(nodes[0].id), children: [] };
     }
 
     return root;
@@ -437,6 +579,27 @@ class GraphExplorer {
       .call(this.zoom.transform, transform);
   }
 
+  zoomIn() {
+    this.svg.transition().duration(300).call(this.zoom.scaleBy, 1.5);
+  }
+
+  zoomOut() {
+    this.svg.transition().duration(300).call(this.zoom.scaleBy, 0.67);
+  }
+
+  fitToView() {
+    const bounds = this.g.node().getBBox();
+    if (bounds.width === 0 || bounds.height === 0) return;
+
+    const scale = 0.9 / Math.max(bounds.width / this.width, bounds.height / this.height);
+    const midX = bounds.x + bounds.width / 2;
+    const midY = bounds.y + bounds.height / 2;
+    const transform = d3.zoomIdentity
+      .translate(this.width / 2 - scale * midX, this.height / 2 - scale * midY)
+      .scale(scale);
+    this.svg.transition().duration(500).call(this.zoom.transform, transform);
+  }
+
   setupEventListeners() {
     this.eventBus.on('node:selected', ({ nodeId, source }) => {
       if (source !== 'graph') {
@@ -466,6 +629,92 @@ class GraphExplorer {
       this.selectedNodes.clear();
       this.render();
     });
+
+    this.eventBus.on('graph:zoomIn', () => {
+      this.zoomIn();
+    });
+
+    this.eventBus.on('graph:zoomOut', () => {
+      this.zoomOut();
+    });
+
+    this.eventBus.on('graph:fitToView', () => {
+      this.fitToView();
+    });
+
+    this.eventBus.on('kind:toggle', ({ kind, visible }) => {
+      if (visible) {
+        this.hiddenKinds.delete(kind);
+      } else {
+        this.hiddenKinds.add(kind);
+      }
+      this.render();
+    });
+
+    this.eventBus.on('kind:showAll', () => {
+      this.hiddenKinds.clear();
+      this.render();
+    });
+
+    this.eventBus.on('kind:showTypesOnly', () => {
+      this.hiddenKinds.clear();
+      this.hiddenKinds.add('module');
+      this.hiddenKinds.add('function');
+      this.render();
+    });
+
+    this.eventBus.on('kind:showFunctionsOnly', () => {
+      this.hiddenKinds.clear();
+      this.hiddenKinds.add('module');
+      this.hiddenKinds.add('struct');
+      this.hiddenKinds.add('enum');
+      this.hiddenKinds.add('trait');
+      this.render();
+    });
+
+    // Sync from DSM - show the same nodes that are visible in the DSM
+    this.eventBus.on('sync:fromDsm', ({ visibleNodeIds }) => {
+      // Hide all nodes first
+      this.hiddenNodes.clear();
+      this.data.nodes.forEach(n => this.hiddenNodes.add(n.id));
+
+      // Then show only the nodes that are visible in DSM
+      visibleNodeIds.forEach(id => this.hiddenNodes.delete(id));
+
+      this.render();
+    });
+
+    // Expand/collapse group in sync with DSM
+    this.eventBus.on('group:expand', ({ groupId }) => {
+      // Show direct children of the group
+      this.data.nodes.forEach(n => {
+        if (n.parent === groupId) {
+          this.hiddenNodes.delete(n.id);
+        }
+      });
+      this.render();
+    });
+
+    this.eventBus.on('group:collapse', ({ groupId }) => {
+      // Hide all descendants of the group
+      const hideDescendants = (parentId) => {
+        this.data.nodes.forEach(n => {
+          if (n.parent === parentId) {
+            this.hiddenNodes.add(n.id);
+            hideDescendants(n.id);
+          }
+        });
+      };
+      hideDescendants(groupId);
+      this.render();
+    });
+  }
+
+  // Get the IDs of currently visible nodes (for syncing to DSM)
+  getVisibleNodeIds() {
+    return this.data.nodes
+      .filter(n => !this.hiddenNodes.has(n.id) && !this.hiddenKinds.has(n.kind))
+      .map(n => n.id);
   }
 }
 

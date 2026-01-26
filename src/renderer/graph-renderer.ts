@@ -39,6 +39,7 @@ class GraphExplorer {
     this.layout = 'force';
     this.selectedNodes = new Set();
     this.hiddenNodes = new Set();
+    this.hiddenCrates = new Set();
     this.groups = new Map();
     this.simulation = null;
     this.eventBus = window.eventBus;
@@ -108,9 +109,17 @@ class GraphExplorer {
   }
 
   getVisibleData() {
-    const nodes = this.data.nodes.filter(n =>
+    let nodes = this.data.nodes.filter(n =>
       !this.hiddenNodes.has(n.id) && !this.hiddenKinds.has(n.kind)
     );
+
+    // Filter out nodes belonging to hidden crates
+    if (this.hiddenCrates.size > 0) {
+      nodes = nodes.filter(n => {
+        const crateId = this.getCrateId(n);
+        return !this.hiddenCrates.has(crateId);
+      });
+    }
     const nodeIds = new Set(nodes.map(n => n.id));
 
     // Build aggregated links - when a link's source or target is hidden,
@@ -156,6 +165,18 @@ class GraphExplorer {
     }
 
     return null;
+  }
+
+  getCrateId(node) {
+    // Find the root crate this node belongs to
+    if (!node.parent) return node.id;
+    let current = node;
+    while (current.parent) {
+      const parent = this.data.nodes.find(n => n.id === current.parent);
+      if (!parent) break;
+      current = parent;
+    }
+    return current.id;
   }
 
   renderForceLayout() {
@@ -626,7 +647,13 @@ class GraphExplorer {
 
     this.eventBus.on('filter:reset', () => {
       this.hiddenNodes.clear();
+      this.hiddenCrates.clear();
       this.selectedNodes.clear();
+      this.render();
+    });
+
+    this.eventBus.on('crates:filter', ({ hiddenCrates }) => {
+      this.hiddenCrates = new Set(hiddenCrates);
       this.render();
     });
 

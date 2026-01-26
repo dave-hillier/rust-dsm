@@ -471,6 +471,103 @@ function generateHtml(
     .kind-filter input {
       margin: 0;
     }
+
+    /* Workspace Filter Panel */
+    .crate-filter-panel {
+      max-height: 250px;
+      overflow-y: auto;
+      border: 1px solid #eee;
+      border-radius: 4px;
+      margin-bottom: 0.5rem;
+    }
+
+    .crate-filter-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0.5rem;
+      font-size: 0.85rem;
+      border-bottom: 1px solid #f5f5f5;
+      cursor: pointer;
+    }
+
+    .crate-filter-item:hover {
+      background: #f9f9f9;
+    }
+
+    .crate-filter-item:last-child {
+      border-bottom: none;
+    }
+
+    .crate-filter-item input {
+      margin: 0;
+    }
+
+    .crate-filter-item .crate-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .crate-filter-item .crate-deps {
+      font-size: 0.75rem;
+      color: #999;
+    }
+
+    .crate-filter-buttons {
+      display: flex;
+      gap: 0.25rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.5rem;
+    }
+
+    .crate-filter-buttons button {
+      padding: 0.25rem 0.5rem;
+      font-size: 0.75rem;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      background: white;
+      cursor: pointer;
+    }
+
+    .crate-filter-buttons button:hover {
+      background: #f0f0f0;
+    }
+
+    .crate-filter-buttons button.active {
+      background: #3498db;
+      color: white;
+      border-color: #3498db;
+    }
+
+    .crate-search {
+      width: 100%;
+      padding: 0.4rem 0.5rem;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      margin-bottom: 0.5rem;
+      font-size: 0.85rem;
+    }
+
+    .focus-info {
+      background: #e3f2fd;
+      padding: 0.5rem;
+      border-radius: 4px;
+      margin-bottom: 0.5rem;
+      font-size: 0.8rem;
+    }
+
+    .focus-info .focus-name {
+      font-weight: 500;
+      color: #1976d2;
+    }
+
+    .focus-info button {
+      margin-top: 0.25rem;
+      padding: 0.2rem 0.5rem;
+      font-size: 0.75rem;
+    }
   </style>
 </head>
 <body>
@@ -534,6 +631,22 @@ function generateHtml(
     </section>
 
     <aside class="sidebar">
+      <div class="sidebar-section">
+        <h3>Workspace Filter</h3>
+        <div id="focus-info" class="focus-info" style="display: none;">
+          <span>Focused on: <span class="focus-name" id="focus-name"></span></span>
+          <br>
+          <button id="clear-focus">Clear Focus</button>
+        </div>
+        <input type="text" id="crate-search" class="crate-search" placeholder="Search crates...">
+        <div class="crate-filter-buttons">
+          <button id="select-all-crates">All</button>
+          <button id="select-none-crates">None</button>
+          <button id="exclude-test-crates">Exclude Tests</button>
+          <button id="exclude-script-crates">Exclude Scripts</button>
+        </div>
+        <div class="crate-filter-panel" id="crate-filter-panel"></div>
+      </div>
       <div class="sidebar-section">
         <h3>Filter by Kind</h3>
         <div class="kind-filters">
@@ -663,8 +776,14 @@ function generateHtml(
   </main>
 
   <div class="context-menu" id="context-menu" style="display: none;">
-    <div class="context-menu-item" data-action="hide">Hide</div>
-    <div class="context-menu-item" data-action="focus">Focus (show only connected)</div>
+    <div class="context-menu-item" data-action="focus">Focus on this</div>
+    <div class="context-menu-item" data-action="focus-deps">Show only dependencies</div>
+    <div class="context-menu-item" data-action="focus-dependents">Show only dependents</div>
+    <div class="context-menu-item" data-action="include-deps">Include dependencies</div>
+    <div class="context-menu-item" data-action="include-dependents">Include dependents</div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="hide">Hide this</div>
+    <div class="context-menu-item" data-action="hide-others">Hide all others</div>
     <div class="context-menu-separator"></div>
     <div class="context-menu-item" data-action="collapse">Collapse Group</div>
     <div class="context-menu-item" data-action="expand">Expand Group</div>
@@ -1031,6 +1150,200 @@ function generateHtml(
           row.kind.toLowerCase().includes(query)
         );
         renderMetricsTable(filtered);
+      });
+
+      // Workspace Filter Panel
+      const crateFilterPanel = document.getElementById('crate-filter-panel');
+      const crateNodes = dsmData.nodes.filter(n => n.kind === 'module' && !n.parentId);
+      const hiddenCrates = new Set();
+      let focusedCrate = null;
+
+      // Build adjacency info for crates
+      const crateDeps = new Map(); // crate -> Set of crates it depends on
+      const crateDependents = new Map(); // crate -> Set of crates that depend on it
+
+      crateNodes.forEach(crate => {
+        crateDeps.set(crate.id, new Set());
+        crateDependents.set(crate.id, new Set());
+      });
+
+      // Analyze edges to find inter-crate dependencies
+      graphData.edges.forEach(edge => {
+        const fromCrate = crateNodes.find(c => edge.from.startsWith(c.id.replace('::crate', '')));
+        const toCrate = crateNodes.find(c => edge.to.startsWith(c.id.replace('::crate', '')));
+        if (fromCrate && toCrate && fromCrate.id !== toCrate.id) {
+          crateDeps.get(fromCrate.id)?.add(toCrate.id);
+          crateDependents.get(toCrate.id)?.add(fromCrate.id);
+        }
+      });
+
+      function renderCrateFilterPanel(searchQuery = '') {
+        crateFilterPanel.innerHTML = '';
+        const query = searchQuery.toLowerCase();
+
+        crateNodes
+          .filter(crate => crate.name.toLowerCase().includes(query))
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .forEach(crate => {
+            const deps = crateDeps.get(crate.id)?.size || 0;
+            const dependents = crateDependents.get(crate.id)?.size || 0;
+            const item = document.createElement('label');
+            item.className = 'crate-filter-item';
+            item.innerHTML = \`
+              <input type="checkbox" \${hiddenCrates.has(crate.id) ? '' : 'checked'} data-crate-id="\${crate.id}">
+              <span class="crate-name" title="\${crate.name}">\${crate.name}</span>
+              <span class="crate-deps" title="Dependencies / Dependents">\${deps}/\${dependents}</span>
+            \`;
+            item.querySelector('input').addEventListener('change', (e) => {
+              if (e.target.checked) {
+                hiddenCrates.delete(crate.id);
+              } else {
+                hiddenCrates.add(crate.id);
+              }
+              applyCrateFilter();
+            });
+            crateFilterPanel.appendChild(item);
+          });
+      }
+
+      function applyCrateFilter() {
+        window.eventBus.emit('crates:filter', { hiddenCrates: Array.from(hiddenCrates), focusedCrate });
+      }
+
+      function setFocus(crateId, mode = 'all') {
+        focusedCrate = crateId;
+        const focusInfo = document.getElementById('focus-info');
+        const focusName = document.getElementById('focus-name');
+
+        if (crateId) {
+          const crate = crateNodes.find(c => c.id === crateId);
+          focusInfo.style.display = 'block';
+          focusName.textContent = crate?.name || crateId;
+
+          // Calculate which crates to show based on mode
+          const toShow = new Set([crateId]);
+
+          if (mode === 'all' || mode === 'deps') {
+            crateDeps.get(crateId)?.forEach(id => toShow.add(id));
+          }
+          if (mode === 'all' || mode === 'dependents') {
+            crateDependents.get(crateId)?.forEach(id => toShow.add(id));
+          }
+
+          // Hide all crates not in toShow
+          hiddenCrates.clear();
+          crateNodes.forEach(crate => {
+            if (!toShow.has(crate.id)) {
+              hiddenCrates.add(crate.id);
+            }
+          });
+        } else {
+          focusInfo.style.display = 'none';
+          hiddenCrates.clear();
+        }
+
+        renderCrateFilterPanel(document.getElementById('crate-search').value);
+        applyCrateFilter();
+      }
+
+      function includeCrates(crateIds) {
+        crateIds.forEach(id => hiddenCrates.delete(id));
+        renderCrateFilterPanel(document.getElementById('crate-search').value);
+        applyCrateFilter();
+      }
+
+      renderCrateFilterPanel();
+
+      document.getElementById('crate-search').addEventListener('input', (e) => {
+        renderCrateFilterPanel(e.target.value);
+      });
+
+      document.getElementById('select-all-crates').addEventListener('click', () => {
+        hiddenCrates.clear();
+        focusedCrate = null;
+        document.getElementById('focus-info').style.display = 'none';
+        renderCrateFilterPanel(document.getElementById('crate-search').value);
+        applyCrateFilter();
+      });
+
+      document.getElementById('select-none-crates').addEventListener('click', () => {
+        crateNodes.forEach(c => hiddenCrates.add(c.id));
+        renderCrateFilterPanel(document.getElementById('crate-search').value);
+        applyCrateFilter();
+      });
+
+      document.getElementById('exclude-test-crates').addEventListener('click', () => {
+        crateNodes.forEach(c => {
+          if (c.name.includes('test') || c.name.includes('mock') || c.name.endsWith('-tests')) {
+            hiddenCrates.add(c.id);
+          }
+        });
+        renderCrateFilterPanel(document.getElementById('crate-search').value);
+        applyCrateFilter();
+      });
+
+      document.getElementById('exclude-script-crates').addEventListener('click', () => {
+        crateNodes.forEach(c => {
+          if (c.name.includes('script') || c.name.includes('cli') || c.name.includes('tool')) {
+            hiddenCrates.add(c.id);
+          }
+        });
+        renderCrateFilterPanel(document.getElementById('crate-search').value);
+        applyCrateFilter();
+      });
+
+      document.getElementById('clear-focus').addEventListener('click', () => {
+        setFocus(null);
+      });
+
+      // Enhanced context menu handling
+      contextMenu.querySelectorAll('.context-menu-item').forEach(item => {
+        item.addEventListener('click', () => {
+          if (!contextNode) return;
+
+          // Find the crate this node belongs to
+          let nodeCrate = contextNode;
+          if (contextNode.parentId) {
+            nodeCrate = crateNodes.find(c => contextNode.id.startsWith(c.id.replace('::crate', '')));
+          }
+          const crateId = nodeCrate?.id || contextNode.id;
+
+          switch (item.dataset.action) {
+            case 'hide':
+              window.eventBus.emit('node:hide', { nodeId: contextNode.id });
+              break;
+            case 'hide-others':
+              // Show only the selected crate
+              crateNodes.forEach(c => {
+                if (c.id !== crateId) hiddenCrates.add(c.id);
+                else hiddenCrates.delete(c.id);
+              });
+              renderCrateFilterPanel(document.getElementById('crate-search').value);
+              applyCrateFilter();
+              break;
+            case 'focus':
+              setFocus(crateId, 'all');
+              break;
+            case 'focus-deps':
+              setFocus(crateId, 'deps');
+              break;
+            case 'focus-dependents':
+              setFocus(crateId, 'dependents');
+              break;
+            case 'include-deps':
+              includeCrates(Array.from(crateDeps.get(crateId) || []));
+              break;
+            case 'include-dependents':
+              includeCrates(Array.from(crateDependents.get(crateId) || []));
+              break;
+            case 'collapse':
+              window.eventBus.emit('group:collapse', { groupId: contextNode.id });
+              break;
+            case 'expand':
+              window.eventBus.emit('group:expand', { groupId: contextNode.id });
+              break;
+          }
+        });
       });
     });
   </script>

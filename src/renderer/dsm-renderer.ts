@@ -163,6 +163,7 @@ class DsmMatrix {
     this.selectedNode = null;
     this.collapsedGroups = new Set();
     this.hiddenNodes = new Set();
+    this.hiddenCrates = new Set();
     this.hiddenKinds = new Set();
     this.sortBy = 'path';
     this.eventBus = window.eventBus;
@@ -310,12 +311,32 @@ class DsmMatrix {
       !this.hiddenNodes.has(n.id) && !this.hiddenKinds.has(n.kind)
     );
 
+    // Filter out nodes belonging to hidden crates
+    if (this.hiddenCrates.size > 0) {
+      nodes = nodes.filter(n => {
+        const crateId = this.getCrateId(n);
+        return !this.hiddenCrates.has(crateId);
+      });
+    }
+
     // Filter out children of collapsed groups
     for (const groupId of this.collapsedGroups) {
       nodes = nodes.filter(n => !this.isDescendantOf(n.id, groupId));
     }
 
     return this.sortNodes(nodes);
+  }
+
+  getCrateId(node) {
+    // Find the root crate this node belongs to
+    if (!node.parentId) return node.id;
+    let current = node;
+    while (current.parentId) {
+      const parent = this.data.nodes.find(n => n.id === current.parentId);
+      if (!parent) break;
+      current = parent;
+    }
+    return current.id;
   }
 
   isDescendantOf(nodeId, ancestorId) {
@@ -906,7 +927,13 @@ class DsmMatrix {
 
     this.eventBus.on('filter:reset', () => {
       this.hiddenNodes.clear();
+      this.hiddenCrates.clear();
       this.collapsedGroups.clear();
+      this.render();
+    });
+
+    this.eventBus.on('crates:filter', ({ hiddenCrates }) => {
+      this.hiddenCrates = new Set(hiddenCrates);
       this.render();
     });
 

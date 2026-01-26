@@ -1060,24 +1060,6 @@ function generateHtml(
         contextMenu.style.display = 'none';
       });
 
-      contextMenu.querySelectorAll('.context-menu-item').forEach(item => {
-        item.addEventListener('click', () => {
-          if (!contextNode) return;
-
-          switch (item.dataset.action) {
-            case 'hide':
-              window.eventBus.emit('node:hide', { nodeId: contextNode.id });
-              break;
-            case 'collapse':
-              window.eventBus.emit('group:collapse', { groupId: contextNode.id });
-              break;
-            case 'expand':
-              window.eventBus.emit('group:expand', { groupId: contextNode.id });
-              break;
-          }
-        });
-      });
-
       // Metrics table
       const tbody = document.getElementById('metrics-tbody');
       const rows = [];
@@ -1162,15 +1144,29 @@ function generateHtml(
       const crateDeps = new Map(); // crate -> Set of crates it depends on
       const crateDependents = new Map(); // crate -> Set of crates that depend on it
 
+      // Build a prefix map for fast crate lookup
+      const cratePrefixMap = new Map(); // prefix -> crate
       crateNodes.forEach(crate => {
         crateDeps.set(crate.id, new Set());
         crateDependents.set(crate.id, new Set());
+        // Store the prefix (crate id without ::crate suffix)
+        const prefix = crate.id.replace('::crate', '');
+        cratePrefixMap.set(prefix, crate);
       });
 
-      // Analyze edges to find inter-crate dependencies
-      graphData.edges.forEach(edge => {
-        const fromCrate = crateNodes.find(c => edge.from.startsWith(c.id.replace('::crate', '')));
-        const toCrate = crateNodes.find(c => edge.to.startsWith(c.id.replace('::crate', '')));
+      // Fast crate lookup by node id
+      function findCrateForNode(nodeId) {
+        // Extract crate prefix from node id (e.g., "hx-alarm::crate::Foo" -> "hx-alarm")
+        const firstSep = nodeId.indexOf('::');
+        if (firstSep === -1) return null;
+        const prefix = nodeId.substring(0, firstSep);
+        return cratePrefixMap.get(prefix) || null;
+      }
+
+      // Analyze links to find inter-crate dependencies (optimized)
+      graphData.links.forEach(link => {
+        const fromCrate = findCrateForNode(link.source);
+        const toCrate = findCrateForNode(link.target);
         if (fromCrate && toCrate && fromCrate.id !== toCrate.id) {
           crateDeps.get(fromCrate.id)?.add(toCrate.id);
           crateDependents.get(toCrate.id)?.add(fromCrate.id);
@@ -1178,13 +1174,23 @@ function generateHtml(
       });
 
       function renderCrateFilterPanel(searchQuery = '') {
+        if (!crateFilterPanel) {
+          console.error('crate-filter-panel element not found');
+          return;
+        }
         crateFilterPanel.innerHTML = '';
         const query = searchQuery.toLowerCase();
 
-        crateNodes
+        const filteredCrates = crateNodes
           .filter(crate => crate.name.toLowerCase().includes(query))
-          .sort((a, b) => a.name.localeCompare(b.name))
-          .forEach(crate => {
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        if (filteredCrates.length === 0) {
+          crateFilterPanel.innerHTML = '<div style="padding: 0.5rem; color: #999;">No crates found</div>';
+          return;
+        }
+
+        filteredCrates.forEach(crate => {
             const deps = crateDeps.get(crate.id)?.size || 0;
             const dependents = crateDependents.get(crate.id)?.size || 0;
             const item = document.createElement('label');

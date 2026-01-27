@@ -302,12 +302,16 @@ class GraphExplorer {
     const root = d3.hierarchy(hierarchy);
     treeLayout(root);
 
+    // Filter out virtual root from rendering
+    const treeLinks = root.links().filter(l => l.source.data.id !== '__root__');
+    const treeNodes = root.descendants().filter(d => d.data.id !== '__root__');
+
     // Create links
     this.g.append('g')
       .attr('class', 'links')
       .attr('transform', 'translate(50, 50)')
       .selectAll('path')
-      .data(root.links())
+      .data(treeLinks)
       .enter()
       .append('path')
       .attr('class', 'tree-link')
@@ -323,7 +327,7 @@ class GraphExplorer {
       .attr('class', 'nodes')
       .attr('transform', 'translate(50, 50)')
       .selectAll('g')
-      .data(root.descendants())
+      .data(treeNodes)
       .enter()
       .append('g')
       .attr('class', d => \`node \${d.data.kind}\`)
@@ -368,11 +372,15 @@ class GraphExplorer {
 
     this.g.attr('transform', \`translate(\${this.width / 2}, \${this.height / 2})\`);
 
+    // Filter out virtual root from rendering
+    const radialLinks = root.links().filter(l => l.source.data.id !== '__root__');
+    const radialNodes = root.descendants().filter(d => d.data.id !== '__root__');
+
     // Links
     this.g.append('g')
       .attr('class', 'links')
       .selectAll('path')
-      .data(root.links())
+      .data(radialLinks)
       .enter()
       .append('path')
       .attr('class', 'radial-link')
@@ -387,7 +395,7 @@ class GraphExplorer {
     const node = this.g.append('g')
       .attr('class', 'nodes')
       .selectAll('g')
-      .data(root.descendants())
+      .data(radialNodes)
       .enter()
       .append('g')
       .attr('class', d => \`node \${d.data.kind}\`)
@@ -568,10 +576,25 @@ class GraphExplorer {
       html += \`Instability: \${metrics.instability.toFixed(2)}\`;
     }
 
+    this.tooltip.html(html);
+
+    const tooltipNode = this.tooltip.node();
+    const rect = tooltipNode.getBoundingClientRect();
+    const offset = 10;
+
+    let left = event.pageX + offset;
+    let top = event.pageY - offset;
+
+    if (event.clientX + offset + rect.width > window.innerWidth) {
+      left = event.pageX - offset - rect.width;
+    }
+    if (event.clientY - offset + rect.height > window.innerHeight) {
+      top = event.pageY - offset - rect.height;
+    }
+
     this.tooltip
-      .html(html)
-      .style('left', (event.pageX + 10) + 'px')
-      .style('top', (event.pageY - 10) + 'px')
+      .style('left', left + 'px')
+      .style('top', top + 'px')
       .style('opacity', 1);
   }
 

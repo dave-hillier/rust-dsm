@@ -172,8 +172,7 @@ function generateHtml(
       background: white;
       border-radius: 8px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-      display: flex;
-      flex-direction: column;
+      overflow-y: auto;
     }
 
     .sidebar-section {
@@ -206,8 +205,6 @@ function generateHtml(
     }
 
     .details-panel {
-      flex: 1;
-      overflow-y: auto;
     }
 
     .metric-row {

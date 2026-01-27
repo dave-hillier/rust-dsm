@@ -352,10 +352,25 @@ class TreemapView {
     html += \`Size: \${this.formatBytes(node.fileSize || 0)}<br>\`;
     html += \`Complexity: \${node.complexity || 0}\`;
 
+    this.tooltip.html(html);
+
+    const tooltipNode = this.tooltip.node();
+    const rect = tooltipNode.getBoundingClientRect();
+    const offset = 10;
+
+    let left = event.pageX + offset;
+    let top = event.pageY - offset;
+
+    if (event.clientX + offset + rect.width > window.innerWidth) {
+      left = event.pageX - offset - rect.width;
+    }
+    if (event.clientY - offset + rect.height > window.innerHeight) {
+      top = event.pageY - offset - rect.height;
+    }
+
     this.tooltip
-      .html(html)
-      .style('left', (event.pageX + 10) + 'px')
-      .style('top', (event.pageY - 10) + 'px')
+      .style('left', left + 'px')
+      .style('top', top + 'px')
       .style('opacity', 1);
   }
 
